@@ -3,6 +3,8 @@
 . "$TESTSUITE_LIB_UTILS"
 . "$(dirname "$0")/find-rabbitmq.sh"
 
+TAIL_LAST_LINES_COUNT=100
+
 # use ramdisk for rabbitmq if available
 RAMDISK="/mnt/ramdisk/$USER"
 if mkdir -p "$RAMDISK" 2> /dev/null; then
@@ -38,6 +40,10 @@ export RABBITMQ_NODE_PORT="$RABBITMQ_TCP_PORT"
 export RABBITMQ_NODENAME="$RABBITMQ_NODENAME"
 export RABBITMQ_ERLANG_COOKIE="$V_RABBITMQ_ERLANG_COOKIE"
 
+rabbitmq_ctl() {
+    "$RABBITMQ_CTL" -n "$RABBITMQ_NODENAME" --erlang-cookie="$V_RABBITMQ_ERLANG_COOKIE" "$@"
+}
+
 start_rabbitmq() {
     mkdir -p "$RABBITMQ_DATA_DIR"
     mkdir -p "$RABBITMQ_LOG_DIR"
@@ -45,13 +51,42 @@ start_rabbitmq() {
     "$RABBITMQ_SERVER" &
 }
 
+do_exit() {
+    touch "$RABBITMQ_TMPDIR/break"
+
+    echo "Rabbitmq server is not ready!"
+    echo
+    echo "Printing the last $TAIL_LAST_LINES_COUNT lines of daemon logfile:"
+    echo "*** LOGFILES BEGIN ***"
+    tail -n $TAIL_LAST_LINES_COUNT  $RABBITMQ_LOG_DIR/*.log || :
+    echo "*** LOGFILES END ***"
+    exit 1
+}
+
 start() {
     (ulimit_files && start_rabbitmq)
+
+    (sleep $TESTSUITE_RABBITMQ_SERVER_START_TIMEOUT && touch "$RABBITMQ_TMPDIR/break") &
+
+    while :; do
+        if rabbitmq_ctl -q ping 2>/dev/null; then
+            break
+        fi
+    	if [ -e "$RABBITMQ_TMPDIR/break" ]; then
+	    break
+	fi
+        echo "Rabbitmq server is not yet ready..."
+        sleep 1
+    done
+
+    if ! rabbitmq_ctl -q ping; then
+        do_exit
+    fi
 }
 
 stop() {
     unset RABBITMQ_ERLANG_COOKIE
-    "$RABBITMQ_CTL" shutdown -n "$RABBITMQ_NODENAME" --erlang-cookie="$V_RABBITMQ_ERLANG_COOKIE"
+    rabbitmq_ctl shutdown
     epmd -kill
     rm -rf "$RABBITMQ_TMPDIR"
 }
